@@ -16,26 +16,30 @@ CORS(app)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# -------------------- LOAD MODELS --------------------
-URL_MODEL_PATH = os.path.join(BASE_DIR, "model", "url_model.h5")
-EMAIL_MODEL_PATH = os.path.join(BASE_DIR, "model", "email_model.h5")
+# -------------------- SAFE MODEL LOADING --------------------
+try:
+    URL_MODEL_PATH = os.path.join(BASE_DIR, "model", "url_model.h5")
+    EMAIL_MODEL_PATH = os.path.join(BASE_DIR, "model", "email_model.h5")
 
-url_model = load_model(URL_MODEL_PATH)
-email_model = load_model(EMAIL_MODEL_PATH)
+    url_model = load_model(URL_MODEL_PATH)
+    email_model = load_model(EMAIL_MODEL_PATH)
 
-# -------------------- LOAD TOKENIZERS --------------------
-with open(os.path.join(BASE_DIR, "model", "tokenizer_url.pkl"), "rb") as f:
-    tokenizer_url = pickle.load(f)
+    with open(os.path.join(BASE_DIR, "model", "tokenizer_url.pkl"), "rb") as f:
+        tokenizer_url = pickle.load(f)
 
-with open(os.path.join(BASE_DIR, "model", "tokenizer_email.pkl"), "rb") as f:
-    tokenizer_email = pickle.load(f)
+    with open(os.path.join(BASE_DIR, "model", "tokenizer_email.pkl"), "rb") as f:
+        tokenizer_email = pickle.load(f)
+
+except Exception as e:
+    print("❌ Model loading failed:", e)
+    raise RuntimeError("Model initialization failed")
 
 # -------------------- CONSTANTS --------------------
 MAX_URL_LEN = 200
 MAX_EMAIL_LEN = 300
 
 URL_THRESHOLD = 0.4
-EMAIL_THRESHOLD = 0.3   # 🔥 LOWER for social-engineering emails
+EMAIL_THRESHOLD = 0.3
 
 # -------------------- TRUST LIST --------------------
 TRUSTED_DOMAINS = {
@@ -60,7 +64,7 @@ PHISHING_TOKENS = {
     "bank", "wallet", "payment"
 }
 
-# -------------------- EMAIL HEURISTICS (UPDATED) --------------------
+# -------------------- EMAIL HEURISTICS --------------------
 PHISHING_EMAIL_KEYWORDS = {
     "unusual activity",
     "new device",
@@ -97,7 +101,6 @@ def predict_url():
     parsed = urlparse(raw_url)
     domain = parsed.netloc.replace("www.", "")
 
-    # ---------- HARD RULE 1: Suspicious TLD ----------
     if any(domain.endswith(tld) for tld in SUSPICIOUS_TLDS):
         return jsonify({
             "prediction": "Phishing",
@@ -106,7 +109,6 @@ def predict_url():
             "reason": "Suspicious top-level domain"
         })
 
-    # ---------- HARD RULE 2: Phishing Tokens ----------
     token_hits = sum(token in raw_url for token in PHISHING_TOKENS)
     if token_hits >= 1:
         return jsonify({
@@ -116,12 +118,11 @@ def predict_url():
             "reason": "Phishing keyword patterns detected"
         })
 
-    # ---------- ML MODEL ----------
     clean_url = preprocess_url(raw_url)
     sequence = tokenizer_url.texts_to_sequences([clean_url])
     padded = pad_sequences(sequence, maxlen=MAX_URL_LEN)
 
-    probability = float(url_model.predict(padded)[0][0])
+    probability = float(url_model.predict(padded, verbose=0)[0][0])
     prediction = "Phishing" if probability >= URL_THRESHOLD else "Legitimate"
     confidence = max(probability, 0.6)
 
@@ -143,8 +144,6 @@ def predict_email():
         return jsonify({"error": "Email text is required"}), 400
 
     raw_email = data["email"].lower()
-
-    # ---------- HARD RULE: SOCIAL ENGINEERING ----------
     hits = sum(keyword in raw_email for keyword in PHISHING_EMAIL_KEYWORDS)
 
     if hits >= 2:
@@ -156,12 +155,11 @@ def predict_email():
             "reason": "Social engineering language detected"
         })
 
-    # ---------- ML MODEL ----------
     clean_email = preprocess_email(raw_email)
     sequence = tokenizer_email.texts_to_sequences([clean_email])
     padded = pad_sequences(sequence, maxlen=MAX_EMAIL_LEN)
 
-    probability = float(email_model.predict(padded)[0][0])
+    probability = float(email_model.predict(padded, verbose=0)[0][0])
     prediction = "Phishing" if probability >= EMAIL_THRESHOLD else "Legitimate"
     confidence = max(probability, 0.6)
 
@@ -172,6 +170,7 @@ def predict_email():
     })
 
 
-# -------------------- RUN SERVER --------------------
+# -------------------- RAILWAY / GUNICORN SAFE ENTRY --------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
